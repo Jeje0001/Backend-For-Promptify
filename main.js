@@ -13,18 +13,24 @@ import { exec } from 'child_process';
 import cors from 'cors';
 import { spawn } from 'child_process';
 
-const app = express()
+const app = express();
 
-// dotenv.config();
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*'); // use specific domain in production
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  next();
+});
+
 app.use(cors({
-  origin: '*', // temporary — allow any origin
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.options('*', cors()); // <-- enable preflight for all routes
 
-// 2) Then parse JSON bodies
+app.options('*', cors());
 app.use(express.json());
+
 
 const port = process.env.PORT || 5001;
 
