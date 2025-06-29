@@ -19,10 +19,7 @@ import { spawn } from 'child_process';
 const app = express();
 const port = process.env.PORT || 5001;
 app.use(cors());
-// allow the pre-flight OPTIONS request to succeed
-app.options('*', cors());
-
-// now you can do
+// Parse JSON bodies
 app.use(express.json());
 
 // ============================
