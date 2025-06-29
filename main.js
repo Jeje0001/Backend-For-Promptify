@@ -13,6 +13,7 @@ import { exec } from 'child_process';
 import cors from 'cors';
 import { spawn } from 'child_process';
 
+const app = express()
 
 // dotenv.config();
 app.use(cors({
