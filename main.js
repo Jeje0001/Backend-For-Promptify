@@ -1,7 +1,7 @@
 // ============================
 // Imports & Setup
 // ============================
-import dotenv from 'dotenv';
+// import dotenv from 'dotenv';
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
@@ -14,7 +14,7 @@ import cors from 'cors';
 import { spawn } from 'child_process';
 
 
-dotenv.config();
+// dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5001;
