@@ -1290,6 +1290,16 @@ app.post('/api/export', (req, res) => {
   });
 });
 
+app.get('/api/download/:filename', (req, res) => {
+  const { filename } = req.params;
+  const filePath = path.join(cutsDir, filename); // 👈 points to /uploads/cuts
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send('File not found');
+  }
+
+  return res.download(filePath); // Triggers browser download
+});
 
 // ============================
 // Start Server
