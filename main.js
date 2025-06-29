@@ -15,12 +15,18 @@ import { spawn } from 'child_process';
 
 
 // dotenv.config();
+app.use(cors({
+  origin: 'http://localhost:3000',
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
+}));
+app.options('*', cors()); // <-- enable preflight for all routes
 
-const app = express();
-const port = process.env.PORT || 5001;
-app.use(cors());
-// Parse JSON bodies
+// 2) Then parse JSON bodies
 app.use(express.json());
+
+const port = process.env.PORT || 5001;
+
 
 // ============================
 // OpenAI Client
