@@ -18,7 +18,11 @@ import { spawn } from 'child_process';
 
 const app = express();
 const port = process.env.PORT || 5001;
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000'], // Add more allowed origins here
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 
 // ============================
 // OpenAI Client
