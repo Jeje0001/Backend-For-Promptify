@@ -17,9 +17,9 @@ const app = express()
 
 // dotenv.config();
 app.use(cors({
-  origin: 'http://localhost:3000',
-  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
+  origin: '*', // temporary — allow any origin
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.options('*', cors()); // <-- enable preflight for all routes
 
