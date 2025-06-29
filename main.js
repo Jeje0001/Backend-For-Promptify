@@ -364,6 +364,7 @@ function parseEndExpression(expression, durationSeconds) {
  * GET /
  * Health check endpoint
  */
+console.log('Defining route: /');
 app.get('/', (req, res) => {
   res.send('Backend is running!');
 });
@@ -372,6 +373,7 @@ app.get('/', (req, res) => {
  * POST /api/upload
  * Handles video file uploads
  */
+console.log('Defining route: /api/upload');
 app.post('/api/upload', upload.single('video'), (req, res) => {
   // Validate file presence
   if (!req.file) {
@@ -390,6 +392,7 @@ app.post('/api/upload', upload.single('video'), (req, res) => {
  * POST /api/parse-prompt
  * Parses a user's prompt and returns structured editing commands
  */
+console.log('Defining route: /api/parse-prompt');
 app.post('/api/parse-prompt', async (req, res) => {
   const { prompt } = req.body;
 
@@ -541,6 +544,7 @@ app.post('/api/parse-prompt', async (req, res) => {
  * POST /api/cut-video
  * Cuts a segment from the video between start and end times
  */
+console.log('Defining route: /api/cut-video');
 app.post('/api/cut-video', async (req, res) => {
   const { filename, start, end } = req.body;
 
@@ -620,6 +624,7 @@ app.post('/api/cut-video', async (req, res) => {
  * GET /force-download/:filename
  * Forces download of an output file by filename
  */
+console.log('Defining route: /api/force-download');
 app.get('/force-download/:filename', (req, res) => {
   const filename = req.params.filename;
   const filePath = path.join(__dirname, 'downloads', filename);
@@ -636,6 +641,7 @@ app.get('/force-download/:filename', (req, res) => {
 // POST /api/add-overlay
 // ============================
 // Adds overlay text to a video based on natural language prompt.
+console.log('Defining route: /api/add-overlay');
 app.post('/api/add-overlay', async (req, res) => {
   const { prompt, filename } = req.body;
 
@@ -706,6 +712,7 @@ app.post('/api/add-overlay', async (req, res) => {
 // POST /api/slow-motion
 // ============================
 // Applies slow motion to a video segment
+console.log('Defining route: /api/slow-motion');
 app.post('/api/slow-motion', async (req, res) => {
   const { filename, start, end, speed } = req.body;
 
@@ -839,6 +846,7 @@ app.post('/api/slow-motion', async (req, res) => {
 // POST /api/extract-audio
 // ============================
 // Extracts audio from a video file as MP3 or WAV
+console.log('Defining route: /api/extract-audio');
 app.post('/api/extract-audio', async (req, res) => {
   const { filename, format } = req.body;
 
@@ -897,6 +905,7 @@ app.post('/api/extract-audio', async (req, res) => {
 // POST /api/add-subtitles
 // ============================
 // Extracts audio → transcribes with Whisper → burns subtitles into video
+console.log('Defining route: /api/add-subtitlies');
 app.post('/api/add-subtitles', async (req, res) => {
   const { filename, user_id } = req.body;
   console.log("📝 Add subtitles requested by user:", user_id);
@@ -971,7 +980,7 @@ app.post('/api/add-subtitles', async (req, res) => {
     }
   });
 });
-
+console.log('Defining route: /api/remove-segment');
 app.post('/api/remove-segment', async (req, res) => {
   const { filename, start, end, user_id } = req.body;
 
@@ -1108,7 +1117,7 @@ app.post('/api/remove-segment', async (req, res) => {
   }
 });
 
-
+console.log('Defining route: /api/export');
 app.post('/api/export', (req, res) => {
   const { filename, targetFormat, newName, user_id } = req.body;
 
