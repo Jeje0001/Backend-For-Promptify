@@ -45,57 +45,54 @@ const openai = new OpenAI({
 // ============================
 // Directory Setup
 // ============================
+
+
+// ============================
+// Safe Paths Setup
+// ============================
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Upload directory for videos
+const ensureDirExists = (dirPath) => {
+  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
+};
+
 const uploadDir = path.join(__dirname, 'uploads', 'videos');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Cuts directory for processed videos
 const cutsDir = path.join(__dirname, 'uploads', 'cuts');
-if (!fs.existsSync(cutsDir)) {
-  fs.mkdirSync(cutsDir, { recursive: true });
-}
-
 const audioDir = path.join(__dirname, 'uploads', 'audio');
-if (!fs.existsSync(audioDir)) {
-  fs.mkdirSync(audioDir, { recursive: true });
-}
 const subtitlesDir = path.join(__dirname, 'uploads', 'subtitles');
-if (!fs.existsSync(subtitlesDir)) {
-  fs.mkdirSync(subtitlesDir, { recursive: true });
-}
+const tempDir = path.join(__dirname, 'temp'); // for temporary work
+
+[uploadDir, cutsDir, audioDir, subtitlesDir, tempDir].forEach(ensureDirExists);
 
 // ============================
-// Multer Configuration
+// Multer Storage Setup (Stream-based)
 // ============================
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+  destination: (_, file, cb) => cb(null, uploadDir),
+  filename: (_, file, cb) => {
+    const timestamp = Date.now();
+    const unique = Math.round(Math.random() * 1e9);
     const ext = path.extname(file.originalname);
-    cb(null, `video-${uniqueSuffix}${ext}`);
+    cb(null, `video-${timestamp}-${unique}${ext}`);
   }
 });
 
 const upload = multer({
   storage,
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB limit
-  fileFilter: (req, file, cb) => {
-    const allowedExtensions = /mp4|mov|avi|mkv/;
-    const allowedMimeTypes = /video\/.*/;
-    const extname = allowedExtensions.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedMimeTypes.test(file.mimetype);
-    if (extname && mimetype) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only video files are allowed!'));
-    }
+  limits: {
+    fileSize: 250 * 1024 * 1024 // Drop to 250MB unless you NEED 500MB
+  },
+  fileFilter: (_, file, cb) => {
+    const allowedExts = /\.(mp4|mov|avi|mkv)$/i;
+    const allowedMime = /^video\//;
+    const extOk = allowedExts.test(file.originalname);
+    const mimeOk = allowedMime.test(file.mimetype);
+    cb(null, extOk && mimeOk);
   }
 });
+
+export { uploadDir, cutsDir, audioDir, subtitlesDir, tempDir, upload };
 
 // ============================
 // Middleware
@@ -371,27 +368,31 @@ function parseEndExpression(expression, durationSeconds) {
  * Health check endpoint
  */
 console.log('Defining route: /');
-app.get('/', (req, res) => {
+app.get('/', (_, res) => {
   res.send('Backend is running!');
 });
 
-/**
- * POST /api/upload
- * Handles video file uploads
- */
+// ============================
+// POST /api/upload
+// ============================
 console.log('Defining route: /api/upload');
 app.post('/api/upload', upload.single('video'), (req, res) => {
-  // Validate file presence
-  if (!req.file) {
-    return res.status(400).json({ success: false, message: 'No file uploaded' });
-  }
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No video file uploaded.' });
+    }
 
-  const fileUrl = `/uploads/videos/${req.file.filename}`;
-  return res.status(200).json({
-    success: true,
-    filename: req.file.filename,
-    url: fileUrl
-  });
+    const videoPath = path.join('/uploads/videos', req.file.filename); // Relative path for frontend
+    return res.status(200).json({
+      success: true,
+      filename: req.file.filename,
+      url: videoPath
+    });
+
+  } catch (err) {
+    console.error('Upload error:', err);
+    return res.status(500).json({ success: false, message: 'Server error during upload.' });
+  }
 });
 
 /**
@@ -603,26 +604,36 @@ app.post('/api/cut-video', async (req, res) => {
     }
 
     // Build FFmpeg cut command
-    const uniqueSuffix = Date.now() + '-' + Math.floor(Math.random() * 1e9);
-    const extension = path.extname(filename);
-    const outputFilename = `cut-${uniqueSuffix}${extension}`;
-    const outputFilePath = path.join(cutsDir, outputFilename);
+            const ffmpeg = spawn('ffmpeg', [
+          '-i', inputFilePath,
+          '-ss', resolvedStart,
+          '-to', adjustedEnd,
+          '-c:v', 'libx264',
+          '-preset', 'fast',
+          '-crf', '23',
+          '-c:a', 'aac',
+          '-b:a', '192k',
+          '-y', // Overwrite if file exists
+          outputFilePath
+        ]);
+        
+        ffmpeg.stderr.on('data', (data) => {
+          console.log(`ffmpeg stderr: ${data}`);
+        });
+        
+        ffmpeg.on('close', (code) => {
+          if (code === 0) {
+            const fileUrl = `/uploads/cuts/${outputFilename}`;
+            return res.status(200).json({
+              success: true,
+              message: 'Video cut successfully.',
+              url: fileUrl
+            });
+          } else {
+            return res.status(500).json({ success: false, message: 'Video cut failed.', code });
+          }
+        });
 
-    const command = `ffmpeg -i "${inputFilePath}" -ss ${resolvedStart} -to ${adjustedEnd} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 192k "${outputFilePath}"`;
-
-    exec(command, (err) => {
-      if (err) {
-        console.error("FFmpeg error:", err);
-        return res.status(500).json({ success: false, message: 'Failed to cut video.', error: err.message });
-      }
-
-      const fileUrl = `/uploads/cuts/${outputFilename}`;
-      return res.status(200).json({
-        success: true,
-        message: 'Video cut successfully.',
-        url: fileUrl
-      });
-    });
   });
 });
 
@@ -696,11 +707,15 @@ app.post('/api/add-overlay', async (req, res) => {
 
   ffmpeg.on('close', code => {
     if (code === 0) {
+    fs.unlink(inputFilePath, (err) => {
+        if (err) console.error("Cleanup error:", err);
+      });
       return res.status(200).json({
         success: true,
         message: 'Overlay added.',
         url: `/uploads/cuts/${outputFilename}`
       });
+    
     } else {
       return res.status(500).json({ success: false, message: 'Overlay failed.', code });
     }
@@ -721,6 +736,8 @@ app.post('/api/add-overlay', async (req, res) => {
 console.log('Defining route: /api/slow-motion');
 app.post('/api/slow-motion', async (req, res) => {
   const { filename, start, end, speed } = req.body;
+  const TIMEOUT_MS = 120000;
+
 
   // 1️⃣ Validate input
   if (!filename || !start || !end || !speed) {
@@ -779,53 +796,54 @@ app.post('/api/slow-motion', async (req, res) => {
   const outputFinal = path.join(cutsDir, `slowmo-${uid}${ext}`);
 
   // 6️⃣ Build FFmpeg commands
+  
   const cmds = [];
 
   if (partA) {
     cmds.push({
       path: partA,
-      cmd: `ffmpeg -y -ss 0 -i "${inputPath}" -t ${sSec} -c copy "${partA}"`
+      args: ['-nostdin', '-threads', '1', '-ss', '0', '-i', inputPath, '-t', `${sSec}`, '-c', 'copy', partA]
     });
   }
 
   cmds.push({
     path: partB,
-    cmd:
-      `ffmpeg -y -ss ${sSec} -i "${inputPath}" -t ${origLen} ` +
-      `-filter_complex "[0:v]setpts=${1 / sp}*PTS[v];[0:a]atempo=${sp}[a]" ` +
-      `-map "[v]" -map "[a]" -t ${slowLen} "${partB}"`
+    args: [
+      '-nostdin', '-threads', '1',
+      '-ss', `${sSec}`, '-i', inputPath, '-t', `${origLen}`,
+      '-filter_complex', `[0:v]setpts=${1 / sp}*PTS[v];[0:a]atempo=${sp}[a]`,
+      '-map', '[v]', '-map', '[a]', '-t', `${slowLen}`, partB
+    ]
   });
 
   if (partC) {
     cmds.push({
       path: partC,
-      cmd: `ffmpeg -y -ss ${eSec} -i "${inputPath}" -c copy "${partC}"`
+      args: ['-nostdin', '-threads', '1', '-ss', `${eSec}`, '-i', inputPath, '-c', 'copy', partC]
     });
   }
 
+
   // 7️⃣ Execute all commands
+
   try {
-    for (const item of cmds) {
-      await new Promise((ok, fail) => {
-        exec(item.cmd, err => err ? fail(err) : ok());
-      });
+    for (const { args } of cmds) {
+      await runFFmpeg(args, TIMEOUT_MS);
     }
 
-    // 8️⃣ Write concat list
-    const lines = cmds.map(i => `file '${i.path}'`).join('\n') + '\n';
-    fs.writeFileSync(listTxt, lines);
+    const concatList = cmds.map(i => `file '${i.path}'`).join('\n');
+    fs.writeFileSync(listTxt, concatList);
 
-    // 9️⃣ Concat parts into final output
-    await new Promise((ok, fail) => {
-      exec(
-        `ffmpeg -y -f concat -safe 0 -i "${listTxt}" -c:v libx264 -preset fast -crf 23 -c:a aac "${outputFinal}"`,
-        err => err ? fail(err) : ok()
-      );
-    });
+    await runFFmpeg([
+      '-nostdin', '-threads', '1',
+      '-f', 'concat', '-safe', '0', '-i', listTxt,
+      '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+      '-c:a', 'aac', outputFinal
+    ], TIMEOUT_MS);
 
-    // 🔟 Cleanup
-    cmds.forEach(i => fs.existsSync(i.path) && fs.unlinkSync(i.path));
-    fs.unlinkSync(listTxt);
+    cmds.forEach(({ path }) => fs.existsSync(path) && fs.unlinkSync(path));
+    fs.existsSync(listTxt) && fs.unlinkSync(listTxt);
+    fs.unlinkSync(inputPath); // 🔥 Delete uploaded video after processing
 
     return res.json({ success: true, url: `/uploads/cuts/${path.basename(outputFinal)}` });
 
@@ -846,63 +864,96 @@ app.post('/api/slow-motion', async (req, res) => {
     const S = Math.floor(sec % 60).toString().padStart(2, '0');
     return `${H}:${M}:${S}`;
   }
+    function runFFmpeg(args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', args);
+      const timeout = setTimeout(() => {
+        ffmpeg.kill('SIGKILL');
+        reject(new Error('FFmpeg timed out'));
+      }, timeoutMs);
+
+      ffmpeg.on('close', code => {
+        clearTimeout(timeout);
+        return code === 0 ? resolve() : reject(new Error(`FFmpeg exited with code ${code}`));
+      });
+
+      ffmpeg.on('error', err => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
+  }
 });
+
 
 // ============================
 // POST /api/extract-audio
 // ============================
 // Extracts audio from a video file as MP3 or WAV
-console.log('Defining route: /api/extract-audio');
 app.post('/api/extract-audio', async (req, res) => {
   const { filename, format } = req.body;
+  const TIMEOUT_MS = 60000;
 
   if (!filename) {
     return res.status(400).json({ success: false, message: "Missing filename" });
   }
 
-  // Ensure download directory exists
+  const inputPath = path.join(__dirname, "uploads", "videos", filename);
+  if (!fs.existsSync(inputPath)) {
+    return res.status(404).json({ success: false, message: "Video file not found." });
+  }
+
   const downloadDir = path.join(__dirname, "downloads");
   if (!fs.existsSync(downloadDir)) {
     fs.mkdirSync(downloadDir);
   }
 
-  // Determine output format
   let outputFormat = "mp3";
-  if (format) {
-    const lowerFormat = format.toLowerCase();
-    if (lowerFormat === "wav") {
-      outputFormat = "wav";
-    } else if (lowerFormat !== "mp3") {
-      return res.status(400).json({ success: false, message: "Unsupported format" });
-    }
+  if (format && format.toLowerCase() === "wav") {
+    outputFormat = "wav";
+  } else if (format && format.toLowerCase() !== "mp3") {
+    return res.status(400).json({ success: false, message: "Unsupported format" });
   }
 
-  const inputPath = path.join(__dirname, "uploads", "videos", filename);
-  const baseName = path.parse(filename).name;
-  const randomPart = Math.floor(Math.random() * 10000);
-  const outputName = "audio-" + Date.now() + "-" + randomPart + "." + outputFormat;
+  const randomSuffix = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+  const outputName = `audio-${randomSuffix}.${outputFormat}`;
   const outputPath = path.join(downloadDir, outputName);
 
-  let ffmpegCommand = "";
-  if (outputFormat === "mp3") {
-    ffmpegCommand = `ffmpeg -i "${inputPath}" -vn -acodec libmp3lame "${outputPath}"`;
-  } else {
-    ffmpegCommand = `ffmpeg -i "${inputPath}" -vn -acodec pcm_s16le "${outputPath}"`;
+  const args = [
+    '-nostdin', '-threads', '1',
+    '-i', inputPath,
+    '-vn',
+    '-acodec', outputFormat === "mp3" ? 'libmp3lame' : 'pcm_s16le',
+    outputPath
+  ];
+
+  try {
+    await runFFmpeg(args, TIMEOUT_MS);
+    return res.status(200).json({ success: true, url: "/downloads/" + outputName });
+  } catch (err) {
+    console.error("❌ Audio extraction error:", err.message);
+    return res.status(500).json({ success: false, message: "Audio extraction failed", error: err.message });
   }
 
-  console.log("🎧 Extracting audio with command:", ffmpegCommand);
+  function runFFmpeg(args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', args);
+      const timeout = setTimeout(() => {
+        ffmpeg.kill('SIGKILL');
+        reject(new Error('FFmpeg timed out'));
+      }, timeoutMs);
 
-  exec(ffmpegCommand, (error, stdout, stderr) => {
-    if (error) {
-      console.error("❌ FFmpeg error:", stderr);
-      return res.status(500).json({ success: false, message: "Audio extraction failed" });
-    }
+      ffmpeg.on('close', code => {
+        clearTimeout(timeout);
+        return code === 0 ? resolve() : reject(new Error(`FFmpeg exited with code ${code}`));
+      });
 
-    return res.status(200).json({
-      success: true,
-      url: "/downloads/" + outputName
+      ffmpeg.on('error', err => {
+        clearTimeout(timeout);
+        reject(err);
+      });
     });
-  });
+  }
 });
 
 
@@ -914,22 +965,20 @@ app.post('/api/extract-audio', async (req, res) => {
 console.log('Defining route: /api/add-subtitlies');
 app.post('/api/add-subtitles', async (req, res) => {
   const { filename, user_id } = req.body;
+  const TIMEOUT_MS = 120000;
   console.log("📝 Add subtitles requested by user:", user_id);
 
-  // Input validation
-  const invalidChars = ['..', '/', '\\'];
-  for (let char of invalidChars) {
-    if (filename.includes(char)) {
-      return res.status(400).json({ success: false, message: 'Invalid filename' });
-    }
+  // Validate input
+  if (!filename || ['..', '/', '\\'].some(c => filename.includes(c))) {
+    return res.status(400).json({ success: false, message: 'Invalid filename' });
   }
 
   const inputFilePath = getVideoPath(filename);
-  if (!inputFilePath) {
+  if (!inputFilePath || !fs.existsSync(inputFilePath)) {
     return res.status(404).json({ success: false, message: 'Video file not found.' });
   }
 
-  const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+  const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
   const audioFilename = `${uniqueSuffix}.mp3`;
   const audioFilePath = path.join(audioDir, audioFilename);
   const srtFilename = `subtitles-${uniqueSuffix}.srt`;
@@ -938,59 +987,76 @@ app.post('/api/add-subtitles', async (req, res) => {
   const outputFilename = `subtitled-${uniqueSuffix}${ext}`;
   const outputFilePath = path.join(cutsDir, outputFilename);
 
-  // Step 1: Extract audio
-  const extractCommand = `ffmpeg -i "${inputFilePath}" -vn -acodec libmp3lame -ar 44100 -ac 2 -ab 192k "${audioFilePath}"`;
+  try {
+    // Step 1: Extract audio
+    await runFFmpeg([
+      '-nostdin', '-threads', '1',
+      '-i', inputFilePath,
+      '-vn', '-acodec', 'libmp3lame', '-ar', '44100', '-ac', '2', '-ab', '192k',
+      audioFilePath
+    ], TIMEOUT_MS);
 
-  exec(extractCommand, async (error) => {
-    if (error) {
-      console.error("Audio extraction error:", error);
-      return res.status(500).json({ success: false, message: 'Failed to extract audio.', error: error.message });
-    }
-    console.log("🎧 File exists:", fs.existsSync(audioFilePath));
-    console.log("📁 Audio Path:", audioFilePath);
+    // Step 2: Whisper transcription
+    const transcription = await openai.audio.transcriptions.create({
+      model: "whisper-1",
+      file: fs.createReadStream(audioFilePath),
+      response_format: "srt"
+    });
 
+    fs.writeFileSync(srtFilePath, transcription);
 
-    try {
-      // Step 2: Whisper transcription
-      const transcription = await openai.audio.transcriptions.create({
-        model: "whisper-1",
-        file: fs.createReadStream(audioFilePath),
-        response_format: "srt"
+    // Step 3: Burn subtitles
+    await runFFmpeg([
+      '-nostdin', '-threads', '1',
+      '-i', inputFilePath,
+      '-vf', `subtitles=${srtFilePath}`,
+      '-c:a', 'copy',
+      outputFilePath
+    ], TIMEOUT_MS);
+
+    // Cleanup
+    if (fs.existsSync(audioFilePath)) fs.unlinkSync(audioFilePath);
+    if (fs.existsSync(srtFilePath)) fs.unlinkSync(srtFilePath);
+    fs.unlinkSync(inputFilePath); // optional: remove original video to save space
+
+    return res.status(200).json({
+      success: true,
+      message: 'Subtitles added and burned into video.',
+      url: `/uploads/cuts/${outputFilename}`
+    });
+
+  } catch (err) {
+    console.error("🔥 Subtitle process failed:", err.message);
+    return res.status(500).json({ success: false, message: 'Subtitle generation failed.', error: err.message });
+  }
+
+  function runFFmpeg(args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', args);
+      const timeout = setTimeout(() => {
+        ffmpeg.kill('SIGKILL');
+        reject(new Error('FFmpeg timed out'));
+      }, timeoutMs);
+
+      ffmpeg.on('close', code => {
+        clearTimeout(timeout);
+        return code === 0 ? resolve() : reject(new Error(`FFmpeg exited with code ${code}`));
       });
 
-      fs.writeFileSync(srtFilePath, transcription);
-
-      // Step 3: Burn subtitles
-      const burnCommand = `ffmpeg -i "${inputFilePath}" -vf subtitles="${srtFilePath}" -c:a copy "${outputFilePath}"`;
-
-      exec(burnCommand, (burnErr) => {
-        if (burnErr) {
-          console.error("Subtitle burn error:", burnErr);
-          return res.status(500).json({ success: false, message: 'Failed to burn subtitles.', error: burnErr.message });
-        }
-
-        // Optional: Clean up
-        if (fs.existsSync(audioFilePath)) fs.unlinkSync(audioFilePath);
-        if (fs.existsSync(srtFilePath)) fs.unlinkSync(srtFilePath);
-
-        return res.status(200).json({
-          success: true,
-          message: 'Subtitles added and burned into video.',
-          url: `/uploads/cuts/${outputFilename}`
-        });
+      ffmpeg.on('error', err => {
+        clearTimeout(timeout);
+        reject(err);
       });
-
-    } catch (err) {
-      console.error("Whisper error:", err);
-      return res.status(500).json({ success: false, message: 'Failed to generate subtitles.', error: err.message });
-    }
-  });
+    });
+  }
 });
+
 console.log('Defining route: /api/remove-segment');
 app.post('/api/remove-segment', async (req, res) => {
   const { filename, start, end, user_id } = req.body;
+  const TIMEOUT_MS = 120000;
 
-  // 1. Validate input
+  // 1️⃣ Validate input
   if (!filename || !start || !end) {
     return res.status(400).json({ success: false, message: 'Missing required fields: filename, start, and end.' });
   }
@@ -999,117 +1065,127 @@ app.post('/api/remove-segment', async (req, res) => {
   }
 
   const inputFilePath = getVideoPath(filename);
-  if (!inputFilePath) {
+  if (!inputFilePath || !fs.existsSync(inputFilePath)) {
     return res.status(404).json({ success: false, message: 'Video file not found.' });
   }
 
-  // 2. Normalize keywords
+  // 2️⃣ Normalize 'start', 'end', and relative expressions
   let parsedStart = start === 'start' || start === 'beginning' ? '00:00:00' : start;
   let parsedEnd = end;
 
-  // 3. Get video duration
-  exec(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputFilePath}"`, (err, stdout) => {
-    if (err) {
-      console.error('ffprobe error:', err);
-      return res.status(500).json({ success: false, message: 'Failed to get video duration.', error: err.message });
+  try {
+    const durationSec = await getDuration(inputFilePath);
+    const endOfVideo = secondsToTime(durationSec);
+
+    const endExpr = /^end-(\d{2}):(\d{2}):(\d{2})$/;
+
+    if (parsedEnd === 'end') parsedEnd = endOfVideo;
+    if (endExpr.test(parsedStart)) {
+      const [_, hh, mm, ss] = parsedStart.match(endExpr);
+      const offset = (+hh) * 3600 + (+mm) * 60 + (+ss);
+      parsedStart = secondsToTime(Math.max(0, durationSec - offset));
+    }
+    if (endExpr.test(parsedEnd)) {
+      const [_, hh, mm, ss] = parsedEnd.match(endExpr);
+      const offset = (+hh) * 3600 + (+mm) * 60 + (+ss);
+      parsedEnd = secondsToTime(Math.max(0, durationSec - offset));
     }
 
-    const durationSeconds = parseFloat(stdout.trim());
-    const endOfVideo = secondsToTime(durationSeconds);
-
-    // 4. Expand 'end' or 'end-HH:MM:SS'
-    const endExprRegex = /^end-(\d{2}):(\d{2}):(\d{2})$/;
-    if (parsedEnd === 'end') {
-      parsedEnd = endOfVideo;
-    }
-    if (endExprRegex.test(parsedStart)) {
-      const [, hh, mm, ss] = parsedStart.match(endExprRegex);
-      const offset = Number(hh) * 3600 + Number(mm) * 60 + Number(ss);
-      parsedStart = secondsToTime(durationSeconds - offset);
-    }
-    if (endExprRegex.test(parsedEnd)) {
-      const [, hh, mm, ss] = parsedEnd.match(endExprRegex);
-      const offset = Number(hh) * 3600 + Number(mm) * 60 + Number(ss);
-      parsedEnd = secondsToTime(durationSeconds - offset);
-    }
-
-    // 5. Validate format
+    // 3️⃣ Validate times
     const timeRegex = /^([0-1]?\d|2[0-3]):([0-5]\d):([0-5]\d)$/;
     if (!timeRegex.test(parsedStart) || !timeRegex.test(parsedEnd)) {
       return res.status(400).json({ success: false, message: 'Invalid time format. Use HH:MM:SS or end-relative format.' });
     }
 
-    // 6. Sanity check
     const startSec = timeToSeconds(parsedStart);
     const endSec = timeToSeconds(parsedEnd);
+
     if (endSec <= startSec) {
       return res.status(400).json({ success: false, message: 'End time must be after start time.' });
     }
 
-    // 7. Prepare paths and commands
-    const unique = Date.now() + '-' + Math.round(Math.random() * 1e6);
+    // 4️⃣ Prepare paths
+    const uid = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const ext = path.extname(filename);
-    const partA = path.join(cutsDir, `keepA-${unique}${ext}`);
-    const partB = path.join(cutsDir, `keepB-${unique}${ext}`);
-    const listFile = path.join(cutsDir, `list-${unique}.txt`);
-    const finalFile = `removed-${unique}${ext}`;
-    const finalPath = path.join(cutsDir, finalFile);
+    const partA = startSec > 0 ? path.join(cutsDir, `keepA-${uid}${ext}`) : null;
+    const partB = parsedEnd !== endOfVideo ? path.join(cutsDir, `keepB-${uid}${ext}`) : null;
+    const listFile = path.join(cutsDir, `list-${uid}.txt`);
+    const finalName = `removed-${uid}${ext}`;
+    const finalPath = path.join(cutsDir, finalName);
 
-    const cmds = [];
-
-    if (startSec > 0) {
-      cmds.push({
-        path: partA,
-        cmd: `ffmpeg -y -i "${inputFilePath}" -ss 00:00:00 -to ${parsedStart} -c copy "${partA}"`
-      });
+    // 5️⃣ Run FFmpeg cuts
+    if (partA) {
+      await runFFmpeg(['-y', '-i', inputFilePath, '-ss', '00:00:00', '-to', parsedStart, '-c', 'copy', partA], TIMEOUT_MS);
     }
 
-    if (parsedEnd !== endOfVideo) {
-      cmds.push({
-        path: partB,
-        cmd: `ffmpeg -y -i "${inputFilePath}" -ss ${parsedEnd} -to ${endOfVideo} -c copy "${partB}"`
-      });
+    if (partB) {
+      await runFFmpeg(['-y', '-i', inputFilePath, '-ss', parsedEnd, '-to', endOfVideo, '-c', 'copy', partB], TIMEOUT_MS);
     }
 
-    if (cmds.length === 0) {
+    // 6️⃣ Write concat list
+    const filesToConcat = [partA, partB].filter(Boolean);
+    if (filesToConcat.length === 0) {
       return res.status(400).json({ success: false, message: 'Nothing left to keep. Aborting.' });
     }
 
-    // 8. Run FFmpeg commands
-    (async () => {
-      try {
-        for (const c of cmds) {
-          await new Promise((resolve, reject) => {
-            exec(c.cmd, err => err ? reject(err) : resolve());
-          });
-        }
+    fs.writeFileSync(listFile, filesToConcat.map(p => `file '${p}'`).join('\n'));
 
-        // 9. Write concat list
-        const fileList = cmds.map(c => `file '${c.path}'`).join('\n');
-        fs.writeFileSync(listFile, fileList);
+    // 7️⃣ Concatenate
+    await runFFmpeg([
+      '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+      '-c:v', 'libx264', '-preset', 'fast', '-c:a', 'aac',
+      finalPath
+    ], TIMEOUT_MS);
 
-        // 10. Concatenate
-        exec(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset fast -c:a aac "${finalPath}"`, (err) => {
-          if (err) {
-            console.error("Concat error:", err);
-            return res.status(500).json({ success: false, message: 'Concat failed.', error: err.message });
-          }
+    // 8️⃣ Cleanup
+    [partA, partB, listFile, inputFilePath].forEach(p => {
+      if (p && fs.existsSync(p)) fs.unlinkSync(p);
+    });
 
-          // 11. Respond with new file
-          return res.status(200).json({
-            success: true,
-            message: 'Segment removed.',
-            url: `/uploads/cuts/${finalFile}`
-          });
-        });
+    return res.status(200).json({
+      success: true,
+      message: 'Segment removed successfully.',
+      url: `/uploads/cuts/${finalName}`
+    });
 
-      } catch (e) {
-        console.error("Segment extraction error:", e);
-        return res.status(500).json({ success: false, message: 'Processing failed.', error: e.message });
-      }
-    })();
-  });
+  } catch (err) {
+    console.error("❌ Segment removal error:", err);
+    return res.status(500).json({ success: false, message: 'Internal error during segment removal.', error: err.message });
+  }
 
+  // ⏱ Helper: get duration using ffprobe
+  function getDuration(filepath) {
+    return new Promise((resolve, reject) => {
+      const cmd = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', filepath]);
+      let output = '';
+      cmd.stdout.on('data', chunk => output += chunk);
+      cmd.on('close', () => resolve(parseFloat(output.trim())));
+      cmd.on('error', reject);
+    });
+  }
+
+  // ⏱ Helper: run ffmpeg safely
+  function runFFmpeg(args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const proc = spawn('ffmpeg', args);
+      const timeout = setTimeout(() => {
+        proc.kill('SIGKILL');
+        reject(new Error('FFmpeg timed out'));
+      }, timeoutMs);
+
+      proc.on('close', code => {
+        clearTimeout(timeout);
+        return code === 0 ? resolve() : reject(new Error(`FFmpeg exited with code ${code}`));
+      });
+
+      proc.on('error', err => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
+  }
+
+  // ⏱ Time conversions
   function timeToSeconds(str) {
     const [h, m, s] = str.split(':').map(Number);
     return h * 3600 + m * 60 + s;
@@ -1123,13 +1199,14 @@ app.post('/api/remove-segment', async (req, res) => {
   }
 });
 
+
 console.log('Defining route: /api/export');
 app.post('/api/export', (req, res) => {
   const { filename, targetFormat, newName, user_id } = req.body;
 
   // Step 1: Check if video exists
   const inputFilePath = getVideoPath(filename);
-  if (!inputFilePath) {
+  if (!inputFilePath || !fs.existsSync(inputFilePath)) {
     return res.status(404).json({
       success: false,
       message: 'Video file not found.'
@@ -1143,8 +1220,9 @@ app.post('/api/export', (req, res) => {
   }
 
   // Step 3: Determine export format
+  const allowedFormats = ['mp4', 'mov', 'avi', 'webm', 'mkv'];
   let extension = 'mp4';
-  if (targetFormat && typeof targetFormat === 'string') {
+  if (targetFormat && typeof targetFormat === 'string' && allowedFormats.includes(targetFormat)) {
     extension = targetFormat;
   }
 
@@ -1165,16 +1243,27 @@ app.post('/api/export', (req, res) => {
 
   console.log("🚀 Spawning FFmpeg with args:", ffmpegArgs.join(' '));
 
-  // Step 5: Run FFmpeg
+  // Step 5: Run FFmpeg with optional timeout
   const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+  const TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+
+  const timeout = setTimeout(() => {
+    ffmpeg.kill('SIGKILL');
+    console.error('❌ FFmpeg process killed due to timeout.');
+  }, TIMEOUT_MS);
 
   ffmpeg.stderr.on('data', (data) => {
     console.log(`📼 FFmpeg stderr: ${data}`);
   });
 
   ffmpeg.on('close', (code) => {
+    clearTimeout(timeout);
     if (code === 0) {
       console.log('✅ Export finished successfully');
+
+      // Optional: delete original file after export
+      // fs.unlinkSync(inputFilePath);
+
       return res.status(200).json({
         success: true,
         message: 'Export complete.',
@@ -1191,6 +1280,7 @@ app.post('/api/export', (req, res) => {
   });
 
   ffmpeg.on('error', (err) => {
+    clearTimeout(timeout);
     console.error('🚨 FFmpeg spawn error:', err);
     return res.status(500).json({
       success: false,
